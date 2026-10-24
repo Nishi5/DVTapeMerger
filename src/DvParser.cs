@@ -1,14 +1,31 @@
 namespace DVTapeMerger;
 
+public enum TcState : byte
+{
+    /// <summary>No usable time code.</summary>
+    None,
+    /// <summary>Time code read from the frame and consistent with its neighbors.</summary>
+    Read,
+    /// <summary>Time code missing or damaged in the frame, derived from the neighboring frames.</summary>
+    Derived,
+}
+
 /// <summary>Per-frame information read directly from the DIF stream.</summary>
 public struct FrameInfo
 {
     /// <summary>Time code as an absolute frame number, or -1 when absent.</summary>
     public int Tc;
+    /// <summary>Time code as read from the frame (before repair), or -1 when absent.</summary>
+    public int RawTc;
     /// <summary>Recording date/time (DateTime ticks), or 0 when absent.</summary>
     public long Rdt;
     /// <summary>Number of video DIF blocks flagged as erroneous (STA != 0 or broken block ID).</summary>
     public short Errors;
+    /// <summary>Number of audio DIF blocks containing error samples.</summary>
+    public short AudioErrors;
+    /// <summary>Number of subcode packs agreeing on the time code (subcode health).</summary>
+    public byte TcVotes;
+    public TcState TcState;
     public bool DropFrame;
 }
 
@@ -25,18 +42,20 @@ public sealed class DvAnalysis
 
     public int ErrorFrameCount => Frames.Count(f => f.Errors > 0);
     public long ErrorBlockCount => Frames.Sum(f => (long)f.Errors);
+    public long AudioErrorBlockCount => Frames.Sum(f => (long)f.AudioErrors);
     public double ErrorBlockRatio => Frames.Length == 0 ? 0 : (double)ErrorBlockCount / ((long)Frames.Length * VideoBlocksPerFrame);
+    public int TcMissingCount => Frames.Count(f => f.RawTc < 0);
 }
 
 /// <summary>
 /// Minimal reader for raw DV25 (IEC 61834 / SMPTE 314M DV25) DIF streams.
-/// Only the subcode/VAUX packs needed for alignment and the video block status are decoded.
+/// Only the subcode/VAUX packs needed for alignment and the block status are decoded.
 /// </summary>
 public static class DvParser
 {
-    const int BlockSize = 80;
-    const int BlocksPerSequence = 150;
-    const int SequenceSize = BlockSize * BlocksPerSequence;
+    public const int BlockSize = 80;
+    public const int BlocksPerSequence = 150;
+    public const int SequenceSize = BlockSize * BlocksPerSequence;
 
     public static (int frameSize, bool isPal)? DetectFormat(string path)
     {
@@ -55,15 +74,12 @@ public static class DvParser
     {
         var format = DetectFormat(path) ?? throw new InvalidDataException("DVストリームとして認識できません（先頭がDIFヘッダーではありません）: " + System.IO.Path.GetFileName(path));
         int frameSize = format.frameSize;
-        int sequences = frameSize / SequenceSize;
 
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20, FileOptions.SequentialScan);
         long count = fs.Length / frameSize;
         var frames = new FrameInfo[count];
         var buf = new byte[frameSize];
-        var tcVotes = new List<(int tc, bool df)>(32);
-        var dateVotes = new List<(int y, int m, int d)>(32);
-        var timeVotes = new List<(int h, int m, int s)>(32);
+        var parser = new FrameParser(format.isPal);
 
         for (long i = 0; i < count; i++)
         {
@@ -73,10 +89,74 @@ public static class DvParser
                 progress?.Report((double)i / count);
             }
             fs.ReadExactly(buf, 0, frameSize);
+            frames[i] = parser.Parse(buf);
+        }
+        progress?.Report(1);
+
+        return new DvAnalysis { Path = path, FrameSize = frameSize, IsPal = format.isPal, Frames = frames };
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Block layout helpers (per DIF sequence: H0, SC0, SC1, VA0-VA2, then 9 x (1 audio + 15 video))
+    // ----------------------------------------------------------------------------------------
+
+    public static bool IsAudioBlock(int blockInSequence) => blockInSequence >= 6 && (blockInSequence - 6) % 16 == 0;
+    public static bool IsVideoBlock(int blockInSequence) => blockInSequence >= 6 && (blockInSequence - 6) % 16 != 0;
+
+    public static bool VideoBlockOk(byte[] f, int o) => (f[o] & 0xE0) == 0x80 && (f[o + 3] >> 4) == 0;
+
+    /// <summary>Audio quantization of the frame from the AAUX source pack (true = 12 bit), or null when not found.</summary>
+    public static bool? Audio12Bit(byte[] f, int sequences)
+    {
+        for (int seq = 0; seq < sequences; seq++)
+            for (int a = 0; a < 9; a++)
+            {
+                int o = seq * SequenceSize + (6 + a * 16) * BlockSize;
+                if ((f[o] & 0xE0) == 0x60 && f[o + 3] == 0x50)
+                {
+                    int qu = f[o + 7] & 0x07;
+                    if (qu == 0) return false;
+                    if (qu == 1) return true;
+                }
+            }
+        return null;
+    }
+
+    /// <summary>True when the audio block is damaged (wrong block ID or error code samples).</summary>
+    public static bool AudioBlockBad(byte[] f, int o, bool? is12Bit)
+    {
+        if ((f[o] & 0xE0) != 0x60)
+            return true;
+        if (is12Bit == true)
+        {
+            for (int i = o + 8; i + 2 < o + BlockSize; i += 3)
+                if ((f[i] == 0x80 && (f[i + 2] >> 4) == 0) || (f[i + 1] == 0x80 && (f[i + 2] & 0x0F) == 0))
+                    return true;
+        }
+        else if (is12Bit == false)
+        {
+            for (int i = o + 8; i + 1 < o + BlockSize; i += 2)
+                if (f[i] == 0x80 && f[i + 1] == 0x00)
+                    return true;
+        }
+        return false;
+    }
+
+    /// <summary>Reads the per-frame information of one DIF frame.</summary>
+    public sealed class FrameParser(bool isPal)
+    {
+        readonly int sequences = isPal ? 12 : 10;
+        readonly List<(int tc, bool df)> tcVotes = new(32);
+        readonly List<(int y, int m, int d)> dateVotes = new(32);
+        readonly List<(int h, int m, int s)> timeVotes = new(32);
+
+        public FrameInfo Parse(byte[] buf)
+        {
             tcVotes.Clear();
             dateVotes.Clear();
             timeVotes.Clear();
-            int errors = 0;
+            int errors = 0, audioErrors = 0;
+            var audio12 = Audio12Bit(buf, sequences);
 
             for (int seq = 0; seq < sequences; seq++)
             {
@@ -89,7 +169,7 @@ public static class DvParser
                     if ((buf[blk] & 0xE0) != 0x20)
                         continue;
                     for (int s = 0; s < 6; s++)
-                        ReadPack(buf, blk + 3 + s * 8 + 3, format.isPal, tcVotes, dateVotes, timeVotes);
+                        ReadPack(buf, blk + 3 + s * 8 + 3, isPal, tcVotes, dateVotes, timeVotes);
                 }
 
                 // VAUX blocks (3 per sequence): 15 packs of 5 bytes
@@ -99,48 +179,48 @@ public static class DvParser
                     if ((buf[blk] & 0xE0) != 0x40)
                         continue;
                     for (int p = 0; p < 15; p++)
-                        ReadPack(buf, blk + 3 + p * 5, format.isPal, null, dateVotes, timeVotes);
+                        ReadPack(buf, blk + 3 + p * 5, isPal, null, dateVotes, timeVotes);
                 }
 
-                // Audio and video blocks: 9 x (1 audio + 15 video)
                 for (int b = 6; b < BlocksPerSequence; b++)
                 {
-                    if ((b - 6) % 16 == 0)
-                        continue;
                     int blk = seqBase + b * BlockSize;
-                    if ((buf[blk] & 0xE0) != 0x80 || (buf[blk + 3] >> 4) != 0)
+                    if (IsAudioBlock(b))
+                    {
+                        if (AudioBlockBad(buf, blk, audio12))
+                            audioErrors++;
+                    }
+                    else if (!VideoBlockOk(buf, blk))
+                    {
                         errors++;
+                    }
                 }
             }
 
-            ref var f = ref frames[i];
-            f.Errors = (short)errors;
-            f.Tc = -1;
+            var f = new FrameInfo { Errors = (short)errors, AudioErrors = (short)audioErrors, Tc = -1, RawTc = -1 };
             if (tcVotes.Count > 0)
             {
-                var best = Majority(tcVotes);
-                f.Tc = best.tc;
+                var best = Majority(tcVotes, out int votes);
+                f.Tc = f.RawTc = best.tc;
                 f.DropFrame = best.df;
+                f.TcVotes = (byte)Math.Min(votes, 255);
+                f.TcState = TcState.Read;
             }
             if (dateVotes.Count > 0 && timeVotes.Count > 0)
             {
-                var d = Majority(dateVotes);
-                var t = Majority(timeVotes);
+                var d = Majority(dateVotes, out _);
+                var t = Majority(timeVotes, out _);
                 try { f.Rdt = new DateTime(d.y, d.m, d.d, t.h, t.m, t.s).Ticks; }
                 catch (ArgumentOutOfRangeException) { f.Rdt = 0; }
             }
+            return f;
         }
-        progress?.Report(1);
-
-        return new DvAnalysis { Path = path, FrameSize = frameSize, IsPal = format.isPal, Frames = frames };
     }
 
-    static T Majority<T>(List<T> votes) where T : notnull
+    static T Majority<T>(List<T> votes, out int bestCount) where T : notnull
     {
-        if (votes.Count == 1)
-            return votes[0];
         T best = votes[0];
-        int bestCount = 0;
+        bestCount = 0;
         for (int i = 0; i < votes.Count; i++)
         {
             int c = 0;

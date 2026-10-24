@@ -10,6 +10,7 @@ public sealed class AppSettings
     public string LastOutput { get; set; } = "";
     public int OutputFormat { get; set; }
     public bool SaveLogs { get; set; } = true;
+    public bool UseDvrescue { get; set; }
 
     static string FilePath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "DVTapeMerger", "settings.json");
 

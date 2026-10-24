@@ -12,6 +12,8 @@ public sealed class MergeEngine
 {
     public required string WorkDir { get; init; }
     public string? Dvrescue { get; init; }
+    /// <summary>Use dvrescue for the merge instead of the built-in block merger.</summary>
+    public bool UseDvrescue { get; init; }
     public string? Ffmpeg { get; init; }
     public required Action<string> Log { get; init; }
     public required Action<double, string> Progress { get; init; }
@@ -95,7 +97,7 @@ public sealed class MergeEngine
 
     public async Task MergeAsync(IList<MergeGroup> groups, string outputPath, OutputFormat format, bool saveLogs, CancellationToken ct)
     {
-        if (Dvrescue == null)
+        if (UseDvrescue && Dvrescue == null)
             throw new InvalidOperationException("dvrescue.exe が見つかりません。設定で場所を指定してください。");
         if (format != OutputFormat.Dv && Ffmpeg == null)
             throw new InvalidOperationException(".dv 以外の形式で出力するにはffmpegが必要です。");
@@ -104,7 +106,7 @@ public sealed class MergeEngine
 
         var jobDir = Path.Combine(WorkDir, "job-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
         Directory.CreateDirectory(jobDir);
-        if (!ToolRunner.IsAscii(jobDir))
+        if (UseDvrescue && !ToolRunner.IsAscii(jobDir))
             Log("警告: 作業フォルダーのパスに英数字以外が含まれています。dvrescueが失敗する場合は設定で変更してください。");
 
         try
@@ -144,6 +146,40 @@ public sealed class MergeEngine
         string status = $"グループ {group.Index} を処理中 (入力 {group.Runs.Count} 件)";
         Progress((double)doneFrames / totalFrames * 0.95, status);
 
+        if (group.Runs.Count == 1)
+        {
+            // Nothing to merge with: the frames are used as they are.
+            var run = group.Runs[0];
+            var path = run.CoversWholeFile ? run.Source.RawPath! : await WriteRunAsync(run, Path.Combine(jobDir, $"g{group.Index:0000}_in0.dv"), ct);
+            group.OutputPath = path;
+            group.Result = Slice(run.Source.Analysis!, run.StartFrame, run.EndFrame, path);
+            group.MergeLogPath = null;
+            Log($"グループ {group.Index}: 入力が1件のためそのまま使用 ({run.Label})");
+            return;
+        }
+
+        Log($"グループ {group.Index}: " + string.Join(" + ", group.Runs.Select(r => r.Label)));
+        if (UseDvrescue)
+            await MergeWithDvrescueAsync(group, jobDir, totalFrames, doneFrames, status, ct);
+        else
+        {
+            var path = Path.Combine(jobDir, $"g{group.Index:0000}.dv");
+            long groupFrames = group.Runs.Max(r => r.FrameCount);
+            var stats = await Task.Run(() => BlockMerger.MergeAsync(group, path,
+                p => Progress((doneFrames + p * groupFrames) / totalFrames * 0.95, status), ct), ct);
+            group.OutputPath = path;
+            group.MergeLogPath = null;
+            Log($"グループ {group.Index}: {stats.Frames} フレーム出力, ブロック修復 {stats.FramesRepaired} フレーム, サブコード(タイムコード等)修復 {stats.FramesMetaRepaired} フレーム, 破損のため除外 {stats.FramesDropped} フレーム, 絵が一致せず除外した候補 {stats.CandidatesRejected}");
+        }
+
+        group.Result = await Task.Run(() => DvParser.Analyze(group.OutputPath!, null, ct), ct);
+        Grouping.RepairTimeCodes(group.Result.Frames);
+        var before = group.Runs.Min(r => r.ErrorRatio);
+        Log($"グループ {group.Index}: 最良入力のエラー率 {before:P3} → 結合後 {group.Result.ErrorBlockRatio:P3}");
+    }
+
+    async Task MergeWithDvrescueAsync(MergeGroup group, string jobDir, long totalFrames, long doneFrames, string status, CancellationToken ct)
+    {
         var inputs = new List<string>();
         for (int k = 0; k < group.Runs.Count; k++)
         {
@@ -153,17 +189,6 @@ public sealed class MergeEngine
                 inputs.Add(ToolRunner.MakeAsciiPath(run.Source.RawPath!, jobDir, name));
             else
                 inputs.Add(await WriteRunAsync(run, Path.Combine(jobDir, name + ".dv"), ct));
-        }
-
-        if (inputs.Count == 1)
-        {
-            // Nothing to merge with: the frames are used as they are.
-            var run = group.Runs[0];
-            group.OutputPath = inputs[0];
-            group.Result = Slice(run.Source.Analysis!, run.StartFrame, run.EndFrame, inputs[0]);
-            group.MergeLogPath = null;
-            Log($"グループ {group.Index}: 入力が1件のためそのまま使用 ({run.Label})");
-            return;
         }
 
         var output = Path.Combine(jobDir, $"g{group.Index:0000}.dv");
@@ -188,7 +213,6 @@ public sealed class MergeEngine
             }
         });
 
-        Log($"グループ {group.Index}: " + string.Join(" + ", group.Runs.Select(r => r.Label)));
         int code;
         try
         {
@@ -208,9 +232,6 @@ public sealed class MergeEngine
 
         group.OutputPath = output;
         group.MergeLogPath = csv;
-        group.Result = await Task.Run(() => DvParser.Analyze(output, null, ct), ct);
-        var before = group.Runs.Min(r => r.ErrorRatio);
-        Log($"グループ {group.Index}: 最良入力のエラー率 {before:P3} → 結合後 {group.Result.ErrorBlockRatio:P3}");
     }
 
     static async Task<string> WriteRunAsync(Run run, string path, CancellationToken ct)

@@ -64,7 +64,7 @@ public sealed class MainForm : Form
             new Label { Text = "同じテープを複数回キャプチャしたファイル（分割されたもの）をすべて追加してください。ドラッグ＆ドロップもできます。", AutoSize = true, Margin = new Padding(10, 8, 3, 3), ForeColor = SystemColors.GrayText }]);
         busyDisabled.AddRange([addFiles, addFolder, remove, clear]);
 
-        foreach (var (name, width) in new[] { ("ファイル名", 230), ("形式", 50), ("フレーム数", 75), ("長さ", 75), ("TC開始", 90), ("TC終了", 90), ("撮影開始", 135), ("エラーフレーム", 90), ("エラー率", 75), ("区間", 45), ("状態", 120) })
+        foreach (var (name, width) in new[] { ("ファイル名", 230), ("形式", 50), ("フレーム数", 75), ("長さ", 75), ("TC開始", 90), ("TC終了", 90), ("撮影開始", 135), ("エラーフレーム", 90), ("エラー率", 75), ("TC読取不可", 80), ("区間", 45), ("状態", 120) })
             fileList.Columns.Add(name, width);
         fileList.DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         fileList.DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths) AddPaths(paths); };
@@ -146,6 +146,7 @@ public sealed class MainForm : Form
     {
         WorkDir = WorkDir,
         Dvrescue = ToolRunner.FindTool(settings.DvrescuePath, "dvrescue.exe"),
+        UseDvrescue = settings.UseDvrescue,
         Ffmpeg = ToolRunner.FindTool(settings.FfmpegPath, "ffmpeg.exe"),
         Log = AppendLog,
         Progress = (p, text) => BeginInvoke(() =>
@@ -243,7 +244,7 @@ public sealed class MainForm : Form
             string[] cols;
             if (a == null)
             {
-                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
+                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", "", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
             }
             else
             {
@@ -254,7 +255,7 @@ public sealed class MainForm : Form
                     firstTc.Tc >= 0 ? DvParser.FramesToTimeCode(firstTc.Tc, a.TcBase, firstTc.DropFrame) : "なし",
                     lastTc.Tc >= 0 ? DvParser.FramesToTimeCode(lastTc.Tc, a.TcBase, lastTc.DropFrame) : "なし",
                     rdt != 0 ? new DateTime(rdt).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "なし",
-                    a.ErrorFrameCount.ToString("N0"), a.ErrorBlockRatio.ToString("P3"), f.Runs.Count.ToString(), "解析済み" + (a.IsPal ? " (PAL)" : " (NTSC)")];
+                    a.ErrorFrameCount.ToString("N0"), a.ErrorBlockRatio.ToString("P3"), a.TcMissingCount.ToString("N0"), f.Runs.Count.ToString(), "解析済み" + (a.IsPal ? " (PAL)" : " (NTSC)")];
             }
             var item = new ListViewItem(cols) { Tag = f, ToolTipText = f.Path };
             if (f.Error != null)
@@ -421,7 +422,7 @@ public sealed class MainForm : Form
             return;
 
         var engine = CreateEngine();
-        if (engine.Dvrescue == null)
+        if (engine.UseDvrescue && engine.Dvrescue == null)
         {
             MessageBox.Show(this, "dvrescue.exe が見つかりません。[ツール]→[設定]で場所を指定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
@@ -513,8 +514,8 @@ public sealed class MainForm : Form
         MessageBox.Show(this,
             "DVTapeMerger " + Application.ProductVersion.Split('+')[0] + "\n\n" +
             "同じDVテープを複数回キャプチャしたファイルから、良好なフレームを選んで1本にまとめます。\n\n" +
-            "フレーム単位の結合処理には外部ツール dvrescue (BSD 3-Clause License, MIPoPS) を、\n" +
             "AVIの読み込みとコンテナ出力には外部ツール FFmpeg を使用します。\n" +
+            "設定により、結合処理に外部ツール dvrescue (BSD 3-Clause License, MIPoPS) を使うこともできます。\n" +
             "これらのツールは本ソフトウェアには含まれていません。",
             "バージョン情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }

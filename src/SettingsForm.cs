@@ -5,6 +5,7 @@ public sealed class SettingsForm : Form
     readonly TextBox dvrescueBox = new() { Width = 420 };
     readonly TextBox ffmpegBox = new() { Width = 420 };
     readonly TextBox workDirBox = new() { Width = 420 };
+    readonly CheckBox useDvrescueBox = new() { Text = "結合処理に dvrescue を使う（通常はオフ。内蔵の結合処理の方がタイムコードの破損に強い）", AutoSize = true, Margin = new Padding(3, 8, 3, 3) };
 
     public SettingsForm(AppSettings settings)
     {
@@ -20,6 +21,7 @@ public sealed class SettingsForm : Form
         dvrescueBox.Text = settings.DvrescuePath;
         ffmpegBox.Text = settings.FfmpegPath;
         workDirBox.Text = settings.WorkDir;
+        useDvrescueBox.Checked = settings.UseDvrescue;
 
         var table = new TableLayoutPanel { ColumnCount = 3, AutoSize = true, Padding = new Padding(10), Dock = DockStyle.Fill };
         AddRow(table, "dvrescue.exe:", dvrescueBox, () => BrowseFile(dvrescueBox, "dvrescue|dvrescue.exe|実行ファイル|*.exe"));
@@ -35,13 +37,15 @@ public sealed class SettingsForm : Form
         };
         table.Controls.Add(note, 0, 3);
         table.SetColumnSpan(note, 3);
+        table.Controls.Add(useDvrescueBox, 0, 4);
+        table.SetColumnSpan(useDvrescueBox, 3);
 
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, AutoSize = true, Dock = DockStyle.Fill };
         var cancel = new Button { Text = "キャンセル", DialogResult = DialogResult.Cancel, AutoSize = true };
         var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
-        table.Controls.Add(buttons, 0, 4);
+        table.Controls.Add(buttons, 0, 5);
         table.SetColumnSpan(buttons, 3);
         AcceptButton = ok;
         CancelButton = cancel;
@@ -52,6 +56,7 @@ public sealed class SettingsForm : Form
             settings.DvrescuePath = dvrescueBox.Text.Trim();
             settings.FfmpegPath = ffmpegBox.Text.Trim();
             settings.WorkDir = workDirBox.Text.Trim();
+            settings.UseDvrescue = useDvrescueBox.Checked;
         };
     }
 

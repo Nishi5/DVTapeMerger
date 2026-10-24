@@ -7,7 +7,7 @@ It starts the following programs as separate processes when the user has install
 
 - Project: https://github.com/mipops/dvrescue
 - License: BSD 3-Clause License, Copyright (c) 2019-2020, Moving Image Preservation of Puget Sound
-- Used for: frame/block level merging of DV captures (`dvrescue --merge`)
+- Used for: optional merge engine (`dvrescue --merge`), only when enabled in the settings
 
 The names of the dvrescue copyright holders and contributors are mentioned only to identify the
 external tool. This project is not affiliated with, or endorsed by, them.

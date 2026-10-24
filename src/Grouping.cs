@@ -7,10 +7,90 @@ public static class Grouping
     /// <summary>Tolerance when comparing recording date/time ranges of runs.</summary>
     static readonly long RdtTolerance = TimeSpan.FromSeconds(5).Ticks;
 
+    /// <summary>Half width (in frames) of the window used to vote on the time code offset.</summary>
+    const int OffsetWindow = 15;
+
+    /// <summary>
+    /// Validates time codes against the frame position and fills missing or damaged ones.
+    /// Within a continuous recording, (time code - frame position) is constant; it only changes where
+    /// the capture dropped or repeated frames. The offset of each frame is decided by a vote over the
+    /// neighboring frames, weighted by how many subcode packs agreed on each read time code, so that
+    /// isolated wrong readings (e.g. a subcode still carrying the previous frame's time code) are ignored.
+    /// </summary>
+    public static void RepairTimeCodes(FrameInfo[] frames)
+    {
+        int n = frames.Length;
+        var offset = new int?[n];
+        var votes = new Dictionary<int, int>();
+        for (int i = 0; i < n; i++)
+        {
+            votes.Clear();
+            for (int j = Math.Max(0, i - OffsetWindow); j <= Math.Min(n - 1, i + OffsetWindow); j++)
+            {
+                if (frames[j].RawTc < 0)
+                    continue;
+                int d = frames[j].RawTc - j;
+                votes[d] = votes.GetValueOrDefault(d) + Math.Max(1, (int)frames[j].TcVotes);
+            }
+            if (votes.Count > 0)
+                offset[i] = votes.MaxBy(kv => kv.Value).Key;
+        }
+
+        // Place each change of offset where the readings around it agree best
+        for (int c = 1; c < n; c++)
+        {
+            if (offset[c - 1] is not int d0 || offset[c] is not int d1 || d0 == d1)
+                continue;
+            int from = Math.Max(1, c - OffsetWindow), to = Math.Min(n - 1, c + OffsetWindow);
+            int lo = Math.Max(0, c - 2 * OffsetWindow), hi = Math.Min(n, c + 2 * OffsetWindow);
+            int bestB = c, bestScore = int.MinValue;
+            for (int bnd = from; bnd <= to; bnd++)
+            {
+                int score = 0;
+                for (int j = lo; j < hi; j++)
+                {
+                    if (frames[j].RawTc < 0)
+                        continue;
+                    int d = frames[j].RawTc - j;
+                    int w = Math.Max(1, (int)frames[j].TcVotes);
+                    if (j < bnd && d == d0 || j >= bnd && d == d1)
+                        score += w;
+                }
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestB = bnd;
+                }
+            }
+            for (int j = from - 1; j <= to; j++)
+                if (offset[j].HasValue && (offset[j] == d0 || offset[j] == d1))
+                    offset[j] = j < bestB ? d0 : d1;
+            c = Math.Max(c, to);
+        }
+
+        bool dropFrame = frames.FirstOrDefault(f => f.RawTc >= 0).DropFrame;
+        for (int i = 0; i < n; i++)
+        {
+            ref var f = ref frames[i];
+            if (offset[i] is int d && i + d >= 0)
+            {
+                f.Tc = i + d;
+                f.TcState = f.RawTc == f.Tc ? TcState.Read : TcState.Derived;
+                f.DropFrame = dropFrame;
+            }
+            else
+            {
+                f.Tc = -1;
+                f.TcState = TcState.None;
+            }
+        }
+    }
+
     public static void BuildRuns(SourceFile file)
     {
         file.Runs.Clear();
         var frames = file.Analysis!.Frames;
+        RepairTimeCodes(frames);
         int start = 0;
         int lastTc = -1;
         for (int i = 0; i < frames.Length; i++)

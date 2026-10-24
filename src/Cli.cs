@@ -16,7 +16,7 @@ static class Cli
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         var settings = AppSettings.Load();
         string? output = null, dvrescue = settings.DvrescuePath, ffmpeg = settings.FfmpegPath, workDir = settings.WorkDir;
-        bool saveLogs = true, analyzeOnly = false;
+        bool saveLogs = true, analyzeOnly = false, useDvrescue = settings.UseDvrescue;
         var inputs = new List<string>();
         for (int i = 0; i < args.Length; i++)
         {
@@ -28,12 +28,13 @@ static class Cli
                 case "--work": workDir = args[++i]; break;
                 case "--no-logs": saveLogs = false; break;
                 case "--analyze": analyzeOnly = true; break;
+                case "--engine": useDvrescue = args[++i] == "dvrescue"; break;
                 default: inputs.Add(args[i]); break;
             }
         }
         if (inputs.Count == 0 || (output == null && !analyzeOnly))
         {
-            Console.WriteLine("Usage: DVTapeMerger.exe --cli [--dvrescue exe] [--ffmpeg exe] [--work dir] [--no-logs] [--analyze] -o output.(dv|avi|mov|mkv) inputs...");
+            Console.WriteLine("Usage: DVTapeMerger.exe --cli [--dvrescue exe] [--ffmpeg exe] [--work dir] [--no-logs] [--analyze] [--engine builtin|dvrescue] -o output.(dv|avi|mov|mkv) inputs...");
             return 2;
         }
 
@@ -48,6 +49,7 @@ static class Cli
             WorkDir = string.IsNullOrWhiteSpace(workDir) ? Path.Combine(Path.GetTempPath(), "DVTapeMerger") : workDir,
             Dvrescue = ToolRunner.FindTool(dvrescue, "dvrescue.exe"),
             Ffmpeg = ToolRunner.FindTool(ffmpeg, "ffmpeg.exe"),
+            UseDvrescue = useDvrescue,
             Log = Console.WriteLine,
             Progress = (_, _) => { },
         };
