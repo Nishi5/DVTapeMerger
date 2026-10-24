@@ -41,6 +41,19 @@ public sealed class Run
         }
     }
 
+    public int ErrorFrames => CountFrames(f => f.Errors > 0);
+    public int AudioErrorFrames => CountFrames(f => f.AudioErrors > 0);
+
+    int CountFrames(Func<FrameInfo, bool> predicate)
+    {
+        int n = 0;
+        var frames = Source.Analysis!.Frames;
+        for (int i = StartFrame; i < EndFrame; i++)
+            if (predicate(frames[i]))
+                n++;
+        return n;
+    }
+
     public double ErrorRatio => FrameCount == 0 ? 0 : (double)ErrorBlocks / ((long)FrameCount * Source.Analysis!.VideoBlocksPerFrame);
 
     public string Label => CoversWholeFile ? Source.FileName : $"{Source.FileName} [{StartFrame}-{EndFrame - 1}]";

@@ -43,6 +43,9 @@ public sealed class DvAnalysis
     public int ErrorFrameCount => Frames.Count(f => f.Errors > 0);
     public long ErrorBlockCount => Frames.Sum(f => (long)f.Errors);
     public long AudioErrorBlockCount => Frames.Sum(f => (long)f.AudioErrors);
+    public int AudioErrorFrameCount => Frames.Count(f => f.AudioErrors > 0);
+    public int AudioBlocksPerFrame => IsPal ? 12 * 9 : 10 * 9;
+    public double AudioErrorBlockRatio => Frames.Length == 0 ? 0 : (double)AudioErrorBlockCount / ((long)Frames.Length * AudioBlocksPerFrame);
     public double ErrorBlockRatio => Frames.Length == 0 ? 0 : (double)ErrorBlockCount / ((long)Frames.Length * VideoBlocksPerFrame);
     public int TcMissingCount => Frames.Count(f => f.RawTc < 0);
 }
@@ -105,39 +108,106 @@ public static class DvParser
 
     public static bool VideoBlockOk(byte[] f, int o) => (f[o] & 0xE0) == 0x80 && (f[o + 3] >> 4) == 0;
 
-    /// <summary>Audio quantization of the frame from the AAUX source pack (true = 12 bit), or null when not found.</summary>
-    public static bool? Audio12Bit(byte[] f, int sequences)
+    // Audio sample positions (IEC 61834-2 shuffling): sample "of" of an audio block = table[seq][block] + n * stride,
+    // where "of" counts the samples of a channel pair interleaved (even: first channel, odd: second channel).
+    static readonly byte[,] Shuffle525 =
     {
-        for (int seq = 0; seq < sequences; seq++)
-            for (int a = 0; a < 9; a++)
-            {
-                int o = seq * SequenceSize + (6 + a * 16) * BlockSize;
-                if ((f[o] & 0xE0) == 0x60 && f[o + 3] == 0x50)
+        { 0, 30, 60, 20, 50, 80, 10, 40, 70 }, { 6, 36, 66, 26, 56, 86, 16, 46, 76 }, { 12, 42, 72, 2, 32, 62, 22, 52, 82 },
+        { 18, 48, 78, 8, 38, 68, 28, 58, 88 }, { 24, 54, 84, 14, 44, 74, 4, 34, 64 },
+        { 1, 31, 61, 21, 51, 81, 11, 41, 71 }, { 7, 37, 67, 27, 57, 87, 17, 47, 77 }, { 13, 43, 73, 3, 33, 63, 23, 53, 83 },
+        { 19, 49, 79, 9, 39, 69, 29, 59, 89 }, { 25, 55, 85, 15, 45, 75, 5, 35, 65 },
+    };
+    static readonly byte[,] Shuffle625 =
+    {
+        { 0, 36, 72, 26, 62, 98, 16, 52, 88 }, { 6, 42, 78, 32, 68, 104, 22, 58, 94 }, { 12, 48, 84, 2, 38, 74, 28, 64, 100 },
+        { 18, 54, 90, 8, 44, 80, 34, 70, 106 }, { 24, 60, 96, 14, 50, 86, 4, 40, 76 }, { 30, 66, 102, 20, 56, 92, 10, 46, 82 },
+        { 1, 37, 73, 27, 63, 99, 17, 53, 89 }, { 7, 43, 79, 33, 69, 105, 23, 59, 95 }, { 13, 49, 85, 3, 39, 75, 29, 65, 101 },
+        { 19, 55, 91, 9, 45, 81, 35, 71, 107 }, { 25, 61, 97, 15, 51, 87, 5, 41, 77 }, { 31, 67, 103, 21, 57, 93, 11, 47, 83 },
+    };
+
+    /// <summary>Audio format of one frame, from its AAUX source packs.</summary>
+    public sealed class AudioFormat
+    {
+        public bool IsPal;
+        public bool Is12Bit;
+        /// <summary>Samples per channel in this frame.</summary>
+        public int Samples;
+        /// <summary>Whether each channel pair is recorded (12 bit: first/second half of the DIF sequences).</summary>
+        public bool[] PairUsed = [true, true];
+
+        public static AudioFormat? Read(byte[] f, bool isPal)
+        {
+            int sequences = isPal ? 12 : 10;
+            int half = sequences / 2;
+            AudioFormat? fmt = null;
+            var found = new bool[2];
+            for (int seq = 0; seq < sequences; seq++)
+                for (int a = 0; a < 9; a++)
                 {
-                    int qu = f[o + 7] & 0x07;
-                    if (qu == 0) return false;
-                    if (qu == 1) return true;
+                    int o = seq * SequenceSize + (6 + a * 16) * BlockSize;
+                    if ((f[o] & 0xE0) != 0x60 || f[o + 3] != 0x50)
+                        continue;
+                    int pairIndex = seq / half;
+                    if (found[pairIndex])
+                        continue;
+                    int qu = f[o + 7] & 0x07, smp = (f[o + 7] >> 3) & 0x07, afSize = f[o + 4] & 0x3F;
+                    if (qu > 1 || smp > 2)
+                        continue;
+                    found[pairIndex] = true;
+                    if (fmt == null)
+                    {
+                        int min = isPal ? smp switch { 0 => 1896, 1 => 1742, _ => 1264 } : smp switch { 0 => 1580, 1 => 1452, _ => 1053 };
+                        fmt = new AudioFormat { IsPal = isPal, Is12Bit = qu == 1, Samples = min + afSize };
+                    }
+                    fmt.PairUsed[pairIndex] = (f[o + 5] & 0x0F) != 0x0F; // AUDIO MODE 0xF: no information (not recorded)
                 }
-            }
-        return null;
+            if (fmt != null && !fmt.Is12Bit)
+                fmt.PairUsed[1] = fmt.PairUsed[0]; // 16 bit: one channel pair spread over all sequences
+            return fmt;
+        }
     }
 
-    /// <summary>True when the audio block is damaged (wrong block ID or error code samples).</summary>
-    public static bool AudioBlockBad(byte[] f, int o, bool? is12Bit)
+    /// <summary>
+    /// True when the audio block is damaged: wrong block ID, or an error code sample (0x800 in 12 bit, 0x8000 in 16 bit)
+    /// at a position actually holding a sample of a recorded channel. Unused positions and unrecorded channels are ignored.
+    /// </summary>
+    public static bool AudioBlockBad(byte[] f, int seq, int audioBlock, AudioFormat? fmt)
     {
+        int o = seq * SequenceSize + (6 + audioBlock * 16) * BlockSize;
+        if (fmt == null)
+            return (f[o] & 0xE0) != 0x60;
+        int sequences = fmt.IsPal ? 12 : 10;
+        int half = sequences / 2;
+        if (!fmt.PairUsed[fmt.Is12Bit ? seq / half : 0])
+            return false;
         if ((f[o] & 0xE0) != 0x60)
             return true;
-        if (is12Bit == true)
+        var table = fmt.IsPal ? Shuffle625 : Shuffle525;
+        int stride = sequences * 9;
+        int limit = fmt.Samples * 2;
+        if (fmt.Is12Bit)
         {
-            for (int i = o + 8; i + 2 < o + BlockSize; i += 3)
+            int start = table[seq % half, audioBlock];
+            for (int n = 0; n < 24; n++)
+            {
+                if (start + n * stride >= limit)
+                    continue;
+                int i = o + 8 + n * 3;
                 if ((f[i] == 0x80 && (f[i + 2] >> 4) == 0) || (f[i + 1] == 0x80 && (f[i + 2] & 0x0F) == 0))
                     return true;
+            }
         }
-        else if (is12Bit == false)
+        else
         {
-            for (int i = o + 8; i + 1 < o + BlockSize; i += 2)
+            int start = table[seq, audioBlock];
+            for (int n = 0; n < 36; n++)
+            {
+                if (start + n * stride >= limit)
+                    continue;
+                int i = o + 8 + n * 2;
                 if (f[i] == 0x80 && f[i + 1] == 0x00)
                     return true;
+            }
         }
         return false;
     }
@@ -156,7 +226,7 @@ public static class DvParser
             dateVotes.Clear();
             timeVotes.Clear();
             int errors = 0, audioErrors = 0;
-            var audio12 = Audio12Bit(buf, sequences);
+            var audio = AudioFormat.Read(buf, isPal);
 
             for (int seq = 0; seq < sequences; seq++)
             {
@@ -187,7 +257,7 @@ public static class DvParser
                     int blk = seqBase + b * BlockSize;
                     if (IsAudioBlock(b))
                     {
-                        if (AudioBlockBad(buf, blk, audio12))
+                        if (AudioBlockBad(buf, seq, (b - 6) / 16, audio))
                             audioErrors++;
                     }
                     else if (!VideoBlockOk(buf, blk))

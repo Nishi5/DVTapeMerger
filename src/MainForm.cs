@@ -11,7 +11,7 @@ public sealed class MainForm : Form
 
     readonly ListView fileList = new() { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, Dock = DockStyle.Fill, AllowDrop = true };
     readonly ListView groupList = new() { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, Dock = DockStyle.Fill };
-    readonly ErrorGraphPanel graph = new() { Dock = DockStyle.Fill };
+    readonly ErrorGraphPanel graph = new() { Location = new Point(0, 0) };
     readonly TextBox logBox = new() { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font(FontFamily.GenericMonospace, 9f) };
     readonly TextBox outputBox = new() { Width = 380 };
     readonly ComboBox formatBox = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
@@ -64,7 +64,7 @@ public sealed class MainForm : Form
             new Label { Text = "同じテープを複数回キャプチャしたファイル（分割されたもの）をすべて追加してください。ドラッグ＆ドロップもできます。", AutoSize = true, Margin = new Padding(10, 8, 3, 3), ForeColor = SystemColors.GrayText }]);
         busyDisabled.AddRange([addFiles, addFolder, remove, clear]);
 
-        foreach (var (name, width) in new[] { ("ファイル名", 230), ("形式", 50), ("フレーム数", 75), ("長さ", 75), ("TC開始", 90), ("TC終了", 90), ("撮影開始", 135), ("エラーフレーム", 90), ("エラー率", 75), ("TC読取不可", 80), ("区間", 45), ("状態", 120) })
+        foreach (var (name, width) in new[] { ("ファイル名", 230), ("形式", 50), ("フレーム数", 75), ("長さ", 75), ("TC開始", 90), ("TC終了", 90), ("撮影開始", 135), ("映像エラー", 80), ("映像エラー率", 85), ("音声エラー", 80), ("TC読取不可", 80), ("区間", 45), ("状態", 120) })
             fileList.Columns.Add(name, width);
         fileList.DragEnter += (_, e) => { if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true) e.Effect = DragDropEffects.Copy; };
         fileList.DragDrop += (_, e) => { if (e.Data?.GetData(DataFormats.FileDrop) is string[] paths) AddPaths(paths); };
@@ -75,7 +75,7 @@ public sealed class MainForm : Form
         filePanel.Controls.Add(fileButtons);
 
         // Groups + graph
-        foreach (var (name, width) in new[] { ("No", 40), ("撮影開始", 135), ("TC開始", 90), ("TC終了", 90), ("長さ", 75), ("入力数", 55), ("最良入力のエラー率", 120), ("結合後のエラー率", 120), ("結合後のエラーフレーム", 140) })
+        foreach (var (name, width) in new[] { ("No", 40), ("撮影開始", 135), ("TC開始", 90), ("TC終了", 90), ("長さ", 75), ("入力数", 55), ("映像エラー (各入力→結合後)", 170), ("音声エラー (各入力→結合後)", 170), ("結合後の映像エラー率", 130) })
             groupList.Columns.Add(name, width);
         groupList.SelectedIndexChanged += (_, _) => graph.ShowGroup(groupList.SelectedItems.Count > 0 ? (MergeGroup)groupList.SelectedItems[0].Tag! : null);
         graph.HoverInfo += text => statusLabel.Text = text;
@@ -83,7 +83,22 @@ public sealed class MainForm : Form
         var groupSplit = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         groupSplit.Panel1.Controls.Add(groupList);
         groupSplit.Panel1.Controls.Add(summaryLabel);
-        groupSplit.Panel2.Controls.Add(graph);
+        var kindPanel = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(2, 2, 2, 0) };
+        var showVideo = new CheckBox { Text = "映像", Checked = true, AutoSize = true };
+        var showAudio = new CheckBox { Text = "音声", Checked = true, AutoSize = true };
+        var showTc = new CheckBox { Text = "タイムコード", Checked = true, AutoSize = true };
+        EventHandler kindsChanged = (_, _) => graph.SetKinds(showVideo.Checked, showAudio.Checked, showTc.Checked);
+        foreach (var c in new[] { showVideo, showAudio, showTc })
+            c.CheckedChanged += kindsChanged;
+        kindPanel.Controls.AddRange([new Label { Text = "表示:", AutoSize = true, Margin = new Padding(3, 6, 3, 3) }, showVideo, showAudio, showTc]);
+        // The graph grows with the number of lanes; its container scrolls
+        var graphScroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = SystemColors.Window };
+        graphScroll.Controls.Add(graph);
+        void FitGraph() => graph.Size = new Size(graphScroll.ClientSize.Width, Math.Max(graph.RequiredHeight, graphScroll.ClientSize.Height));
+        graph.LayoutChanged += FitGraph;
+        graphScroll.Resize += (_, _) => FitGraph();
+        groupSplit.Panel2.Controls.Add(graphScroll);
+        groupSplit.Panel2.Controls.Add(kindPanel);
 
         var tabs = new TabControl { Dock = DockStyle.Fill };
         var groupTab = new TabPage("結合グループとエラー分布");
@@ -129,7 +144,7 @@ public sealed class MainForm : Form
         Load += (_, _) =>
         {
             mainSplit.SplitterDistance = 230;
-            groupSplit.SplitterDistance = 190;
+            groupSplit.SplitterDistance = 150;
         };
         FormClosing += OnClosing;
 
@@ -244,7 +259,7 @@ public sealed class MainForm : Form
             string[] cols;
             if (a == null)
             {
-                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", "", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
+                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", "", "", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
             }
             else
             {
@@ -255,7 +270,7 @@ public sealed class MainForm : Form
                     firstTc.Tc >= 0 ? DvParser.FramesToTimeCode(firstTc.Tc, a.TcBase, firstTc.DropFrame) : "なし",
                     lastTc.Tc >= 0 ? DvParser.FramesToTimeCode(lastTc.Tc, a.TcBase, lastTc.DropFrame) : "なし",
                     rdt != 0 ? new DateTime(rdt).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "なし",
-                    a.ErrorFrameCount.ToString("N0"), a.ErrorBlockRatio.ToString("P3"), a.TcMissingCount.ToString("N0"), f.Runs.Count.ToString(), "解析済み" + (a.IsPal ? " (PAL)" : " (NTSC)")];
+                    a.ErrorFrameCount.ToString("N0"), a.ErrorBlockRatio.ToString("P3"), a.AudioErrorFrameCount.ToString("N0"), a.TcMissingCount.ToString("N0"), f.Runs.Count.ToString(), "解析済み" + (a.IsPal ? " (PAL)" : " (NTSC)")];
             }
             var item = new ListViewItem(cols) { Tag = f, ToolTipText = f.Path };
             if (f.Error != null)
@@ -285,9 +300,9 @@ public sealed class MainForm : Form
                 DvParser.FramesToTimeCode(g.TcEnd, a.TcBase, df),
                 FormatDuration((g.Result?.Frames.Length ?? frames) / a.FrameRate),
                 g.Runs.Count.ToString(),
-                g.Runs.Min(r => r.ErrorRatio).ToString("P3"),
+                string.Join(", ", g.Runs.Select(r => r.ErrorFrames.ToString("N0"))) + (g.Result != null ? " → " + g.Result.ErrorFrameCount.ToString("N0") : ""),
+                string.Join(", ", g.Runs.Select(r => r.AudioErrorFrames.ToString("N0"))) + (g.Result != null ? " → " + g.Result.AudioErrorFrameCount.ToString("N0") : ""),
                 g.Result != null ? g.Result.ErrorBlockRatio.ToString("P3") : "",
-                g.Result != null ? g.Result.ErrorFrameCount.ToString("N0") : "",
             ]) { Tag = g };
             if (g.Runs.Count == 1)
                 item.ForeColor = SystemColors.GrayText;
@@ -308,7 +323,8 @@ public sealed class MainForm : Form
         {
             long frames = groups.Sum(g => (long)g.Result!.Frames.Length);
             long errFrames = groups.Sum(g => (long)g.Result!.ErrorFrameCount);
-            text += $"  結合後: 全 {frames:N0} フレーム中、エラーが残るフレーム {errFrames:N0}";
+            long audioErrFrames = groups.Sum(g => (long)g.Result!.AudioErrorFrameCount);
+            text += $"  結合後: 全 {frames:N0} フレーム中、映像エラーが残るフレーム {errFrames:N0}、音声エラーが残るフレーム {audioErrFrames:N0}";
         }
         summaryLabel.Text = text;
         if (groupList.Items.Count > 0)

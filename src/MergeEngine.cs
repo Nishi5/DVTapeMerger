@@ -52,7 +52,7 @@ public sealed class MergeEngine
                 var raw = file.RawPath;
                 file.Analysis = await Task.Run(() => DvParser.Analyze(raw, progress, ct), ct);
                 Grouping.BuildRuns(file);
-                Log($"解析: {file.FileName}  {file.Analysis.Frames.Length} フレーム, エラーフレーム {file.Analysis.ErrorFrameCount}, 区間 {file.Runs.Count}");
+                Log($"解析: {file.FileName}  {file.Analysis.Frames.Length} フレーム, 映像エラーフレーム {file.Analysis.ErrorFrameCount}, 音声エラーフレーム {file.Analysis.AudioErrorFrameCount}, TC読取不可 {file.Analysis.TcMissingCount}, 区間 {file.Runs.Count}");
             }
             catch (OperationCanceledException)
             {
@@ -397,21 +397,22 @@ public sealed class MergeEngine
         report.AppendLine("DVTapeMerger 結合レポート");
         report.AppendLine("出力: " + Path.GetFileName(outputPath));
         report.AppendLine();
-        long totalFrames = 0, totalErrorFrames = 0;
+        long totalFrames = 0, totalErrorFrames = 0, totalAudioErrorFrames = 0;
         foreach (var g in groups)
         {
             var r = g.Result!;
             totalFrames += r.Frames.Length;
             totalErrorFrames += r.ErrorFrameCount;
+            totalAudioErrorFrames += r.AudioErrorFrameCount;
             report.AppendLine($"グループ {g.Index}: TC {DvParser.FramesToTimeCode(g.TcStart, r.TcBase, r.Frames.FirstOrDefault().DropFrame)} - {DvParser.FramesToTimeCode(g.TcEnd, r.TcBase, r.Frames.FirstOrDefault().DropFrame)}, {r.Frames.Length} フレーム");
             foreach (var run in g.Runs)
-                report.AppendLine($"    入力: {run.Label}  {run.FrameCount} フレーム, エラーブロック率 {run.ErrorRatio.ToString("P3", inv)}");
-            report.AppendLine($"    結合後: エラーフレーム {r.ErrorFrameCount}, エラーブロック率 {r.ErrorBlockRatio.ToString("P3", inv)}");
+                report.AppendLine($"    入力: {run.Label}  {run.FrameCount} フレーム, 映像エラーフレーム {run.ErrorFrames} (ブロック率 {run.ErrorRatio.ToString("P3", inv)}), 音声エラーフレーム {run.AudioErrorFrames}");
+            report.AppendLine($"    結合後: 映像エラーフレーム {r.ErrorFrameCount} (ブロック率 {r.ErrorBlockRatio.ToString("P3", inv)}), 音声エラーフレーム {r.AudioErrorFrameCount}");
             if (g.MergeLogPath != null && File.Exists(g.MergeLogPath))
                 File.Copy(g.MergeLogPath, Path.Combine(logDir, Path.GetFileName(g.MergeLogPath)), true);
         }
         report.AppendLine();
-        report.AppendLine($"合計: {totalFrames} フレーム, エラーが残るフレーム {totalErrorFrames}");
+        report.AppendLine($"合計: {totalFrames} フレーム, 映像エラーが残るフレーム {totalErrorFrames}, 音声エラーが残るフレーム {totalAudioErrorFrames}");
         File.WriteAllText(Path.Combine(logDir, "report.txt"), report.ToString(), new UTF8Encoding(true));
 
         var scenes = new StringBuilder("No,Start,End,RecordingDateTime\n");

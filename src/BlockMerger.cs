@@ -14,7 +14,7 @@ public static class BlockMerger
         public required int FrameIndex { get; init; }
         public FrameInfo Info => Run.Source.Analysis!.Frames[FrameIndex];
         public byte[]? Data;
-        public bool? Audio12;
+        public DvParser.AudioFormat? Audio;
     }
 
     /// <summary>True when the intact video blocks of both frames have the same payload (or too few to tell).</summary>
@@ -133,7 +133,7 @@ public static class BlockMerger
                     c.Data = new byte[frameSize];
                     fs.Position = (long)c.FrameIndex * frameSize;
                     await fs.ReadExactlyAsync(c.Data, ct);
-                    c.Audio12 = DvParser.Audio12Bit(c.Data, sequences);
+                    c.Audio = DvParser.AudioFormat.Read(c.Data, a0.IsPal);
                 }
 
                 // Captures of the same tape frame carry identical block payloads: candidates showing a
@@ -201,12 +201,12 @@ public static class BlockMerger
                         {
                             int o = seq * DvParser.SequenceSize + b * DvParser.BlockSize;
                             bool audio = DvParser.IsAudioBlock(b);
-                            if (audio ? !DvParser.AudioBlockBad(outFrame, o, baseFrame.Audio12) : DvParser.VideoBlockOk(outFrame, o))
+                            if (audio ? !DvParser.AudioBlockBad(outFrame, seq, (b - 6) / 16, baseFrame.Audio) : DvParser.VideoBlockOk(outFrame, o))
                                 continue;
                             for (int k = 1; k < candidates.Count; k++)
                             {
                                 var d = candidates[k].Data!;
-                                if (audio ? !DvParser.AudioBlockBad(d, o, candidates[k].Audio12 ?? baseFrame.Audio12) : DvParser.VideoBlockOk(d, o))
+                                if (audio ? !DvParser.AudioBlockBad(d, seq, (b - 6) / 16, candidates[k].Audio ?? baseFrame.Audio) : DvParser.VideoBlockOk(d, o))
                                 {
                                     Buffer.BlockCopy(d, o, outFrame, o, DvParser.BlockSize);
                                     SetArb(outFrame, o, arb);
