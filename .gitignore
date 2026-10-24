@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+publish/
+*.user
+.vs/
+
+# Media and test data (never commit captures)
+*.dv
+*.dif
+*.avi
+*.mov
+*.mkv
+*.mp4
+test_movie/
+
+# External tools (not redistributed)
+dvrescue*/
+*.exe
+*.dll
+
+# Logs produced by the tool
+*_logs/
