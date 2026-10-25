@@ -86,10 +86,41 @@ public sealed class MergeEngine
             ["-hide_banner", "-loglevel", "error", "-y", "-i", aviPath, "-map", "0:v:0", "-c", "copy", "-f", "rawvideo", part],
             Log, ct);
         if (code != 0 || !File.Exists(part))
+        {
+            TryDelete(part);
             throw new InvalidOperationException($"ffmpegでのAVI読み込みに失敗しました (終了コード {code})");
+        }
         File.Move(part, target, true);
         return target;
     }
+
+    /// <summary>Deletes the DV streams extracted from AVI files (only the files this tool created).</summary>
+    public static void ClearCache(string workDir)
+    {
+        var dir = Path.Combine(workDir, "cache");
+        if (!Directory.Exists(dir))
+            return;
+        foreach (var file in Directory.EnumerateFiles(dir))
+        {
+            var name = Path.GetFileName(file);
+            int dot = name.IndexOf('.');
+            if (dot == 16 && name[..16].All(Uri.IsHexDigit) && (name[16..] is ".dv" or ".dv.part"))
+                TryDelete(file);
+        }
+        try { if (!Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// <summary>
+    /// True when the audio sampling frequency or quantization changes within the inputs
+    /// (formats seen on fewer frames than one second are ignored as damaged packs).
+    /// </summary>
+    public static bool HasMixedAudioFormats(IEnumerable<MergeGroup> groups) => groups
+        .SelectMany(g => g.Runs)
+        .SelectMany(r => r.Source.Analysis!.Frames.Skip(r.StartFrame).Take(r.FrameCount))
+        .Where(f => f.AudioCode != 0)
+        .GroupBy(f => f.AudioCode)
+        .Count(g => g.Count() >= 30) > 1;
 
     // ----------------------------------------------------------------------------------------
     // Merge
@@ -103,8 +134,12 @@ public sealed class MergeEngine
             throw new InvalidOperationException(".dv 以外の形式で出力するにはffmpegが必要です。");
         if (groups.Count == 0)
             throw new InvalidOperationException("結合するデータがありません。");
+        if (groups.Select(g => g.Runs[0].Source.Analysis!.IsPal).Distinct().Count() > 1)
+            throw new InvalidOperationException("NTSCとPALのファイルが混在しています。同じ方式のファイルだけを追加してください。");
+        if (format != OutputFormat.Dv && HasMixedAudioFormats(groups))
+            Log("警告: 途中で音声の形式（サンプリング周波数・ビット数）が変わっています。.dv 以外の形式では音声が正しく出力されない場合があります。");
 
-        var jobDir = Path.Combine(WorkDir, "job-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
+        var jobDir = Path.Combine(WorkDir, "job-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(jobDir);
         if (UseDvrescue && !ToolRunner.IsAscii(jobDir))
             Log("警告: 作業フォルダーのパスに英数字以外が含まれています。dvrescueが失敗する場合は設定で変更してください。");
@@ -170,12 +205,14 @@ public sealed class MergeEngine
             group.OutputPath = path;
             group.MergeLogPath = null;
             Log($"グループ {group.Index}: {stats.Frames} フレーム出力, ブロック修復 {stats.FramesRepaired} フレーム, サブコード(タイムコード等)修復 {stats.FramesMetaRepaired} フレーム, 破損のため除外 {stats.FramesDropped} フレーム, 絵が一致せず除外した候補 {stats.CandidatesRejected}");
+            if (stats.FramesWithoutTc > 0)
+                Log($"グループ {group.Index}: 警告: タイムコードが決まらず位置を特定できない入力フレーム {stats.FramesWithoutTc} 個は使用していません");
         }
 
         group.Result = await Task.Run(() => DvParser.Analyze(group.OutputPath!, null, ct), ct);
         Grouping.RepairTimeCodes(group.Result.Frames);
-        var before = group.Runs.Min(r => r.ErrorRatio);
-        Log($"グループ {group.Index}: 最良入力のエラー率 {before:P3} → 結合後 {group.Result.ErrorBlockRatio:P3}");
+        Log($"グループ {group.Index}: 映像エラーフレーム {string.Join(", ", group.Runs.Select(r => r.ErrorFrames))} → 結合後 {group.Result.ErrorFrameCount}, " +
+            $"音声エラーフレーム {string.Join(", ", group.Runs.Select(r => r.AudioErrorFrames))} → 結合後 {group.Result.AudioErrorFrameCount}");
     }
 
     async Task MergeWithDvrescueAsync(MergeGroup group, string jobDir, long totalFrames, long doneFrames, string status, CancellationToken ct)

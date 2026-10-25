@@ -27,6 +27,8 @@ public struct FrameInfo
     public byte TcVotes;
     public TcState TcState;
     public bool DropFrame;
+    /// <summary>Audio format of the frame: 0 unknown, else 1 + sampling frequency code * 2 + (12 bit ? 1 : 0).</summary>
+    public byte AudioCode;
 }
 
 public sealed class DvAnalysis
@@ -130,6 +132,8 @@ public static class DvParser
     {
         public bool IsPal;
         public bool Is12Bit;
+        /// <summary>Sampling frequency code: 0 48 kHz, 1 44.1 kHz, 2 32 kHz.</summary>
+        public int Smp;
         /// <summary>Samples per channel in this frame.</summary>
         public int Samples;
         /// <summary>Whether each channel pair is recorded (12 bit: first/second half of the DIF sequences).</summary>
@@ -157,7 +161,7 @@ public static class DvParser
                     if (fmt == null)
                     {
                         int min = isPal ? smp switch { 0 => 1896, 1 => 1742, _ => 1264 } : smp switch { 0 => 1580, 1 => 1452, _ => 1053 };
-                        fmt = new AudioFormat { IsPal = isPal, Is12Bit = qu == 1, Samples = min + afSize };
+                        fmt = new AudioFormat { IsPal = isPal, Is12Bit = qu == 1, Smp = smp, Samples = min + afSize };
                     }
                     fmt.PairUsed[pairIndex] = (f[o + 5] & 0x0F) != 0x0F; // AUDIO MODE 0xF: no information (not recorded)
                 }
@@ -268,6 +272,8 @@ public static class DvParser
             }
 
             var f = new FrameInfo { Errors = (short)errors, AudioErrors = (short)audioErrors, Tc = -1, RawTc = -1 };
+            if (audio != null)
+                f.AudioCode = (byte)(1 + audio.Smp * 2 + (audio.Is12Bit ? 1 : 0));
             if (tcVotes.Count > 0)
             {
                 var best = Majority(tcVotes, out int votes);

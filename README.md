@@ -31,10 +31,17 @@ DV では撮影日時・タイムコード・カメラ情報などは各フレ�
 | `.mkv` | ○ | ○ (タグ) | ○ |
 | `.avi` | — | — | — |
 
+## ダウンロード
+
+[Releases](../../releases) から次のどちらかをダウンロードして展開してください（インストールは不要です）。
+
+- `DVTapeMerger-<版>-win-x64.zip`: 単体で動く版（約 50 MB）
+- `DVTapeMerger-<版>-win-x64-fdd.zip`: 小さい版（要 [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)）
+
 ## 必要なもの
 
 - Windows 10 / 11（x64）
-- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)（ビルドする場合は .NET 10 SDK）
+- 小さい版を使う場合は [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0)（ビルドする場合は .NET 10 SDK）
 - **FFmpeg**: AVI ファイルの読み込みと、`.dv` 以外での出力に必要（`ffmpeg.exe` に PATH が通っていれば自動検出）
 - （任意）**dvrescue CLI**: 設定で結合処理に dvrescue を使う場合のみ。<https://mediaarea.net/DVRescue>
 
@@ -45,8 +52,13 @@ FFmpeg と dvrescue は本リポジトリには含まれていません。[ツ�
 
 ```
 cd src
-dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o ..\publish
+rem 小さい版（.NET 10 Desktop Runtime が必要）
+dotnet publish -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o ..\publish\fdd
+rem 単体で動く版
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o ..\publish\win-x64
 ```
+
+アイコン（`src/app.ico`）は `assets/make-icon.ps1` で生成しています。
 
 ## 使い方
 
@@ -63,8 +75,8 @@ DVTapeMerger.exe --cli [--ffmpeg path] [--work dir] [--no-logs] [--analyze] [--e
 
 ## 処理の流れと注意点
 
-- **AVI**: FFmpeg のストリームコピーで DV ストリームを取り出してから使います（無劣化。取り出したデータは作業フォルダーに
-  キャッシュされ、終了時に削除されます）。作業フォルダーには、AVI の合計サイズと同程度の空き容量が必要です。
+- **AVI**: FFmpeg のストリームコピーで DV ストリームを取り出してから使います（無劣化。取り出したデータは作業フォルダーの
+  `cache` にキャッシュされ、終了時に削除されます）。作業フォルダーには、AVI の合計サイズと同程度の空き容量が必要です。
 - **タイムコードの補正**: 古いテープでは、映像は無事でもサブコード（タイムコード）だけが読めない・前のフレームの値のまま、
   といったことがキャプチャごとに起こります。「タイムコード − ファイル内の位置」は連続した区間では一定なので、
   前後約15フレームの読み取り結果の多数決（読み取れたパック数で重み付け）で各フレームのタイムコードを決め直します。
@@ -79,6 +91,9 @@ DVTapeMerger.exe --cli [--ffmpeg path] [--work dir] [--no-logs] [--analyze] [--e
   含まれると、前後のフレームが混ざったり同じフレームが重複したりすることがあります（再生時のチラつきの原因になります）。
 - タイムコードが記録されていない区間は、他のキャプチャと対応付けできないため単独で出力されます。
 - どのキャプチャでも同じ場所が壊れている場合は修復できません（結合は「良い方を選ぶ」処理です）。
+- 途中で音声の形式（32kHz/12bit ↔ 48kHz/16bit など）が変わるテープは、`.dv` 形式での出力をお勧めします
+  （`.mov` / `.mkv` / `.avi` では音声が正しく出力されない場合があるため、結合前に確認します）。
+- NTSC と PAL のファイルを混ぜて結合することはできません。
 - 映像エラーは、映像 DIF ブロックのうち STA（エラー状態）が 0 以外のもの（またはブロック ID が壊れたもの）です。
 - 音声エラーは、音声 DIF ブロックのうち、実際にサンプルが入る位置（DV 規格の音声配置に従って算出）にエラーコード
   （12bit: 0x800、16bit: 0x8000）があるものです。1フレーム中の空き位置や、録音されていないチャンネル

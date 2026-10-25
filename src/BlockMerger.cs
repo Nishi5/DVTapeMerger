@@ -75,7 +75,7 @@ public static class BlockMerger
 
     static void SetArb(byte[] frame, int blockOffset, int arb) => frame[blockOffset] = (byte)((frame[blockOffset] & 0xF0) | arb);
 
-    public sealed record Stats(int Frames, int FramesRepaired, int FramesMetaRepaired, int FramesDropped, int DerivedTcUsed, int CandidatesRejected);
+    public sealed record Stats(int Frames, int FramesRepaired, int FramesMetaRepaired, int FramesDropped, int DerivedTcUsed, int CandidatesRejected, int FramesWithoutTc);
 
     public static async Task<Stats> MergeAsync(MergeGroup group, string outputPath, Action<double>? progress, CancellationToken ct)
     {
@@ -86,6 +86,7 @@ public static class BlockMerger
 
         // Time code -> candidate frames
         var byTc = new SortedDictionary<int, List<Candidate>>();
+        int withoutTc = 0;
         for (int r = 0; r < group.Runs.Count; r++)
         {
             var run = group.Runs[r];
@@ -94,7 +95,11 @@ public static class BlockMerger
             {
                 int tc = frames[i].Tc;
                 if (tc < 0)
+                {
+                    // Too far from any readable time code to be placed among the other captures
+                    withoutTc++;
                     continue;
+                }
                 if (!byTc.TryGetValue(tc, out var list))
                     byTc[tc] = list = new();
                 list.Add(new Candidate { Run = run, RunOrder = r, FrameIndex = i });
@@ -239,6 +244,6 @@ public static class BlockMerger
                 s.Dispose();
         }
         progress?.Invoke(1);
-        return new Stats(written, repaired, metaRepaired, dropped, derived, rejected);
+        return new Stats(written, repaired, metaRepaired, dropped, derived, rejected, withoutTc);
     }
 }

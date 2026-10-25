@@ -8,6 +8,7 @@ public sealed class MainForm : Form
     readonly List<SourceFile> files = new();
     List<MergeGroup> groups = new();
     CancellationTokenSource? cts;
+    bool closeWhenIdle;
 
     readonly ListView fileList = new() { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, Dock = DockStyle.Fill, AllowDrop = true };
     readonly ListView groupList = new() { View = View.Details, FullRowSelect = true, GridLines = true, HideSelection = false, MultiSelect = false, Dock = DockStyle.Fill };
@@ -31,6 +32,8 @@ public sealed class MainForm : Form
     {
         Text = "DVTapeMerger";
         Font = SystemFonts.MessageBoxFont;
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
+        catch (Exception e) when (e is ArgumentException or IOException) { }
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 900);
         Size = new Size(Math.Min(1280, area.Width * 9 / 10), Math.Min(900, area.Height * 9 / 10));
         MinimumSize = new Size(720, 520);
@@ -79,6 +82,7 @@ public sealed class MainForm : Form
             groupList.Columns.Add(name, width);
         groupList.SelectedIndexChanged += (_, _) => graph.ShowGroup(groupList.SelectedItems.Count > 0 ? (MergeGroup)groupList.SelectedItems[0].Tag! : null);
         graph.HoverInfo += text => statusLabel.Text = text;
+        graph.MouseLeave += (_, _) => { if (cts == null) statusLabel.Text = ""; };
 
         var groupSplit = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         groupSplit.Panel1.Controls.Add(groupList);
@@ -157,27 +161,48 @@ public sealed class MainForm : Form
 
     string WorkDir => string.IsNullOrWhiteSpace(settings.WorkDir) ? Path.Combine(Path.GetTempPath(), "DVTapeMerger") : settings.WorkDir;
 
+    /// <summary>Work folders used in this session (the work folder setting may change in between).</summary>
+    readonly HashSet<string> usedWorkDirs = new(StringComparer.OrdinalIgnoreCase);
+
     MergeEngine CreateEngine() => new()
     {
-        WorkDir = WorkDir,
+        WorkDir = UseWorkDir(),
         Dvrescue = ToolRunner.FindTool(settings.DvrescuePath, "dvrescue.exe"),
         UseDvrescue = settings.UseDvrescue,
         Ffmpeg = ToolRunner.FindTool(settings.FfmpegPath, "ffmpeg.exe"),
         Log = AppendLog,
-        Progress = (p, text) => BeginInvoke(() =>
+        Progress = (p, text) => PostToUi(() =>
         {
             progressBar.Value = (int)Math.Clamp(p * 1000, 0, 1000);
             statusLabel.Text = text;
         }),
     };
 
+    string UseWorkDir()
+    {
+        var dir = WorkDir;
+        usedWorkDirs.Add(dir);
+        return dir;
+    }
+
+    /// <summary>Runs an action on the UI thread, unless the window is already gone.</summary>
+    void PostToUi(Action action)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        try { BeginInvoke(action); }
+        catch (InvalidOperationException) { }
+    }
+
     void AppendLog(string line)
     {
         if (InvokeRequired)
         {
-            BeginInvoke(() => AppendLog(line));
+            PostToUi(() => AppendLog(line));
             return;
         }
+        if (IsDisposed)
+            return;
         logBox.AppendText(DateTime.Now.ToString("HH:mm:ss ", CultureInfo.InvariantCulture) + line + Environment.NewLine);
     }
 
@@ -408,6 +433,7 @@ public sealed class MainForm : Form
             SetBusy(false);
             RefreshFileList();
             RefreshGroupList();
+            CloseIfRequested();
         }
     }
 
@@ -415,7 +441,7 @@ public sealed class MainForm : Form
     {
         if (files.Count == 0 || files.Any(f => f.Analysis == null && f.Error == null) || groups.Count == 0)
         {
-            if (!await AnalyzeAsync())
+            if (!await AnalyzeAsync() || closeWhenIdle)
                 return;
         }
         if (files.Any(f => f.Error != null)
@@ -450,6 +476,10 @@ public sealed class MainForm : Form
             return;
         }
         if (!CheckFreeSpace(output))
+            return;
+        if (format != OutputFormat.Dv && MergeEngine.HasMixedAudioFormats(groups)
+            && MessageBox.Show(this, "途中で音声の形式（サンプリング周波数・ビット数）が変わっています。\n.dv 以外の形式では音声が正しく出力されない場合があるため、.dv 形式での出力をお勧めします。\n\nこのまま続行しますか？",
+                Text, MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK)
             return;
 
         settings.LastOutput = output;
@@ -490,7 +520,14 @@ public sealed class MainForm : Form
                 foreach (var g in groups)
                     g.Result = null;
             RefreshGroupList();
+            CloseIfRequested();
         }
+    }
+
+    void CloseIfRequested()
+    {
+        if (closeWhenIdle)
+            BeginInvoke(Close);
     }
 
     bool CheckFreeSpace(string output)
@@ -540,12 +577,15 @@ public sealed class MainForm : Form
     {
         if (cts != null)
         {
-            if (MessageBox.Show(this, "処理中です。中止して終了しますか？", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+            // Wait for the running task to stop (it closes the window when done) so no work file is left open
+            e.Cancel = true;
+            if (closeWhenIdle || MessageBox.Show(this, "処理中です。中止して終了しますか？", Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
             {
-                e.Cancel = true;
-                return;
+                closeWhenIdle = true;
+                statusLabel.Text = "中止しています...";
+                cts.Cancel();
             }
-            cts.Cancel();
+            return;
         }
         settings.LastOutput = outputBox.Text.Trim();
         settings.OutputFormat = formatBox.SelectedIndex;
@@ -553,12 +593,10 @@ public sealed class MainForm : Form
         settings.Save();
 
         // DV streams extracted from AVI files are only a cache
-        try
+        foreach (var dir in usedWorkDirs)
         {
-            var cache = Path.Combine(WorkDir, "cache");
-            if (Directory.Exists(cache))
-                Directory.Delete(cache, true);
+            try { MergeEngine.ClearCache(dir); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 }

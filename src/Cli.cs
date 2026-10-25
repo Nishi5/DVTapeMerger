@@ -18,21 +18,27 @@ static class Cli
         string? output = null, dvrescue = settings.DvrescuePath, ffmpeg = settings.FfmpegPath, workDir = settings.WorkDir;
         bool saveLogs = true, analyzeOnly = false, useDvrescue = settings.UseDvrescue;
         var inputs = new List<string>();
-        for (int i = 0; i < args.Length; i++)
+        bool badArgs = false;
+        for (int i = 0; i < args.Length && !badArgs; i++)
         {
+            string? Value() => i + 1 < args.Length ? args[++i] : null;
             switch (args[i])
             {
-                case "-o": output = args[++i]; break;
-                case "--dvrescue": dvrescue = args[++i]; break;
-                case "--ffmpeg": ffmpeg = args[++i]; break;
-                case "--work": workDir = args[++i]; break;
+                case "-o": output = Value(); badArgs = output == null; break;
+                case "--dvrescue": dvrescue = Value(); badArgs = dvrescue == null; break;
+                case "--ffmpeg": ffmpeg = Value(); badArgs = ffmpeg == null; break;
+                case "--work": workDir = Value(); badArgs = workDir == null; break;
                 case "--no-logs": saveLogs = false; break;
                 case "--analyze": analyzeOnly = true; break;
-                case "--engine": useDvrescue = args[++i] == "dvrescue"; break;
+                case "--engine":
+                    var engineName = Value();
+                    badArgs = engineName is not ("builtin" or "dvrescue");
+                    useDvrescue = engineName == "dvrescue";
+                    break;
                 default: inputs.Add(args[i]); break;
             }
         }
-        if (inputs.Count == 0 || (output == null && !analyzeOnly))
+        if (badArgs || inputs.Count == 0 || (output == null && !analyzeOnly))
         {
             Console.WriteLine("Usage: DVTapeMerger.exe --cli [--dvrescue exe] [--ffmpeg exe] [--work dir] [--no-logs] [--analyze] [--engine builtin|dvrescue] -o output.(dv|avi|mov|mkv) inputs...");
             return 2;
@@ -83,6 +89,12 @@ static class Cli
         {
             Console.WriteLine("Error: " + e.Message);
             return 1;
+        }
+        finally
+        {
+            // DV streams extracted from AVI files are only a cache
+            try { MergeEngine.ClearCache(engine.WorkDir); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
     }
 }
