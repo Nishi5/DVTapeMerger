@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>DVTapeMerger</AssemblyName>
     <RootNamespace>DVTapeMerger</RootNamespace>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <ApplicationIcon>app.ico</ApplicationIcon>
     <Authors>Nishi5</Authors>
     <Product>DVTapeMerger</Product>
