@@ -32,7 +32,7 @@ public sealed class SettingsForm : Form
         {
             AutoSize = true,
             MaximumSize = new Size(600, 0),
-            Text = "空欄の場合はこのアプリと同じフォルダー、PATHの順に探します。\n作業フォルダーにはAVIから取り出したDVデータと結合途中のファイルが置かれます（キャプチャファイルと同程度の空き容量が必要です）。英数字のみのパスを推奨します。",
+            Text = "空欄の場合はこのアプリと同じフォルダー、PATHの順に探します。\n作業フォルダーにはAVI・MOVから取り出したDVデータと結合途中のファイルが置かれます（キャプチャファイルと同程度の空き容量が必要です）。英数字のみのパスを推奨します。",
             Margin = new Padding(3, 8, 3, 8),
         };
         table.Controls.Add(note, 0, 3);

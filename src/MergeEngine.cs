@@ -37,10 +37,10 @@ public sealed class MergeEngine
             double share = 1.0 / files.Count;
             try
             {
-                if (file.IsAvi)
+                if (file.InContainer)
                 {
-                    Progress(baseProgress, $"AVIからDVストリームを取り出し中 ({i + 1}/{files.Count}): {file.FileName}");
-                    file.RawPath = await ExtractAviAsync(file.Path, ct);
+                    Progress(baseProgress, $"{file.Kind}からDVストリームを取り出し中 ({i + 1}/{files.Count}): {file.FileName}");
+                    file.RawPath = await ExtractDvStreamAsync(file.Path, ct);
                 }
                 else
                 {
@@ -60,41 +60,43 @@ public sealed class MergeEngine
             }
             catch (Exception e)
             {
-                file.Error = e.Message;
+                file.Error = file.InContainer && e is InvalidDataException
+                    ? "映像がDV形式ではありません（DV以外の形式に変換されたファイルは使えません）"
+                    : e.Message;
                 file.Analysis = null;
-                Log($"エラー: {file.FileName}: {e.Message}");
+                Log($"エラー: {file.FileName}: {file.Error}");
             }
         }
         Progress(1, "解析完了");
     }
 
-    async Task<string> ExtractAviAsync(string aviPath, CancellationToken ct)
+    async Task<string> ExtractDvStreamAsync(string sourcePath, CancellationToken ct)
     {
         if (Ffmpeg == null)
-            throw new InvalidOperationException("AVIの読み込みにはffmpegが必要です。設定でffmpeg.exeの場所を指定してください。");
+            throw new InvalidOperationException("AVI・MOVの読み込みにはffmpegが必要です。設定でffmpeg.exeの場所を指定してください。");
 
-        var info = new FileInfo(aviPath);
+        var info = new FileInfo(sourcePath);
         var key = Convert.ToHexString(SHA1.HashData(Encoding.UTF8.GetBytes($"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}")))[..16];
         var target = Path.Combine(CacheDir, key + ".dv");
         if (File.Exists(target))
             return target;
 
         var part = target + ".part";
-        // Stream copy of the video track: DV video packets in AVI are complete DIF frames,
+        // Stream copy of the video track: DV video packets in AVI and QuickTime are complete DIF frames,
         // so the raw output is the original DIF data, byte for byte.
         int code = await ToolRunner.RunAsync(Ffmpeg,
-            ["-hide_banner", "-loglevel", "error", "-y", "-i", aviPath, "-map", "0:v:0", "-c", "copy", "-f", "rawvideo", part],
+            ["-hide_banner", "-loglevel", "error", "-y", "-i", sourcePath, "-map", "0:v:0", "-c", "copy", "-f", "rawvideo", part],
             Log, ct);
         if (code != 0 || !File.Exists(part))
         {
             TryDelete(part);
-            throw new InvalidOperationException($"ffmpegでのAVI読み込みに失敗しました (終了コード {code})");
+            throw new InvalidOperationException($"ffmpegでの読み込みに失敗しました (終了コード {code})");
         }
         File.Move(part, target, true);
         return target;
     }
 
-    /// <summary>Deletes the DV streams extracted from AVI files (only the files this tool created).</summary>
+    /// <summary>Deletes the DV streams extracted from AVI / MOV files (only the files this tool created).</summary>
     public static void ClearCache(string workDir)
     {
         var dir = Path.Combine(workDir, "cache");
@@ -136,6 +138,8 @@ public sealed class MergeEngine
             throw new InvalidOperationException("結合するデータがありません。");
         if (groups.Select(g => g.Runs[0].Source.Analysis!.IsPal).Distinct().Count() > 1)
             throw new InvalidOperationException("NTSCとPALのファイルが混在しています。同じ方式のファイルだけを追加してください。");
+        if (groups.SelectMany(g => g.Runs).Any(r => string.Equals(r.Source.Path, Path.GetFullPath(outputPath), StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("出力ファイルが入力ファイルに含まれています。別の出力ファイル名を指定してください。");
         if (format != OutputFormat.Dv && HasMixedAudioFormats(groups))
             Log("警告: 途中で音声の形式（サンプリング周波数・ビット数）が変わっています。.dv 以外の形式では音声が正しく出力されない場合があります。");
 

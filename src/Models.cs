@@ -4,9 +4,14 @@ public sealed class SourceFile
 {
     public required string Path { get; init; }
     public string FileName => System.IO.Path.GetFileName(Path);
-    public bool IsAvi => Path.EndsWith(".avi", StringComparison.OrdinalIgnoreCase);
+    /// <summary>AVI / QuickTime captures: the DV stream is taken out of the container with ffmpeg.</summary>
+    public bool InContainer => Extension is ".avi" or ".mov";
+    public string Kind => InContainer ? Extension[1..].ToUpperInvariant() : "DV";
+    string Extension => System.IO.Path.GetExtension(Path).ToLowerInvariant();
 
-    /// <summary>Raw DIF stream used for analysis and merging (the file itself, or a stream extracted from AVI).</summary>
+    public static bool IsSupported(string path) => System.IO.Path.GetExtension(path).ToLowerInvariant() is ".dv" or ".dif" or ".avi" or ".mov";
+
+    /// <summary>Raw DIF stream used for analysis and merging (the file itself, or a stream extracted from AVI / MOV).</summary>
     public string? RawPath { get; set; }
     public DvAnalysis? Analysis { get; set; }
     public string? Error { get; set; }

@@ -217,7 +217,7 @@ public sealed class MainForm : Form
 
     void AddFilesDialog()
     {
-        using var dlg = new OpenFileDialog { Multiselect = true, Filter = "DVキャプチャ (*.dv;*.avi)|*.dv;*.avi;*.dif|すべてのファイル|*.*" };
+        using var dlg = new OpenFileDialog { Multiselect = true, Filter = "DVキャプチャ (*.dv;*.avi;*.mov)|*.dv;*.avi;*.mov;*.dif|すべてのファイル|*.*" };
         if (dlg.ShowDialog(this) == DialogResult.OK)
             AddPaths(dlg.FileNames);
     }
@@ -237,8 +237,8 @@ public sealed class MainForm : Form
         foreach (var p in paths)
         {
             IEnumerable<string> candidates = Directory.Exists(p)
-                ? Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories).Where(IsSupported).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-                : IsSupported(p) ? [p] : [];
+                ? Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories).Where(SourceFile.IsSupported).OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                : SourceFile.IsSupported(p) ? [p] : [];
             foreach (var c in candidates)
             {
                 var full = Path.GetFullPath(c);
@@ -250,12 +250,6 @@ public sealed class MainForm : Form
             outputBox.Text = Path.Combine(Path.GetDirectoryName(files[0].Path)!, "merged" + FormatExtensions[formatBox.SelectedIndex]);
         ResetGroups();
         RefreshFileList();
-    }
-
-    static bool IsSupported(string path)
-    {
-        var ext = Path.GetExtension(path).ToLowerInvariant();
-        return ext is ".dv" or ".avi" or ".dif";
     }
 
     void RemoveSelected()
@@ -284,14 +278,14 @@ public sealed class MainForm : Form
             string[] cols;
             if (a == null)
             {
-                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", "", "", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
+                cols = [f.FileName, f.Kind, "", "", "", "", "", "", "", "", "", "", f.Error != null ? "エラー: " + f.Error : "未解析"];
             }
             else
             {
                 var firstTc = a.Frames.FirstOrDefault(x => x.Tc >= 0);
                 var lastTc = a.Frames.LastOrDefault(x => x.Tc >= 0);
                 var rdt = a.Frames.FirstOrDefault(x => x.Rdt != 0).Rdt;
-                cols = [f.FileName, f.IsAvi ? "AVI" : "DV", a.Frames.Length.ToString("N0"), FormatDuration(a.Frames.Length / a.FrameRate),
+                cols = [f.FileName, f.Kind, a.Frames.Length.ToString("N0"), FormatDuration(a.Frames.Length / a.FrameRate),
                     firstTc.Tc >= 0 ? DvParser.FramesToTimeCode(firstTc.Tc, a.TcBase, firstTc.DropFrame) : "なし",
                     lastTc.Tc >= 0 ? DvParser.FramesToTimeCode(lastTc.Tc, a.TcBase, lastTc.DropFrame) : "なし",
                     rdt != 0 ? new DateTime(rdt).ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) : "なし",
@@ -406,9 +400,9 @@ public sealed class MainForm : Form
             return false;
         }
         var engine = CreateEngine();
-        if (files.Any(f => f.IsAvi && f.Analysis == null) && engine.Ffmpeg == null)
+        if (files.Any(f => f.InContainer && f.Analysis == null) && engine.Ffmpeg == null)
         {
-            MessageBox.Show(this, "AVIファイルの読み込みにはffmpeg.exeが必要です。[ツール]→[設定]で場所を指定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, "AVI・MOVファイルの読み込みにはffmpeg.exeが必要です。[ツール]→[設定]で場所を指定してください。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
         cts = new CancellationTokenSource();
@@ -567,7 +561,7 @@ public sealed class MainForm : Form
         MessageBox.Show(this,
             "DVTapeMerger " + Application.ProductVersion.Split('+')[0] + "\n\n" +
             "同じDVテープを複数回キャプチャしたファイルから、良好なフレームを選んで1本にまとめます。\n\n" +
-            "AVIの読み込みとコンテナ出力には外部ツール FFmpeg を使用します。\n" +
+            "AVI・MOVの読み込みとコンテナ出力には外部ツール FFmpeg を使用します。\n" +
             "設定により、結合処理に外部ツール dvrescue (BSD 3-Clause License, MIPoPS) を使うこともできます。\n" +
             "これらのツールは本ソフトウェアには含まれていません。",
             "バージョン情報", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -592,7 +586,7 @@ public sealed class MainForm : Form
         settings.SaveLogs = saveLogsBox.Checked;
         settings.Save();
 
-        // DV streams extracted from AVI files are only a cache
+        // DV streams extracted from AVI / MOV files are only a cache
         foreach (var dir in usedWorkDirs)
         {
             try { MergeEngine.ClearCache(dir); }

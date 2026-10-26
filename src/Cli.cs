@@ -46,7 +46,7 @@ static class Cli
 
         var files = inputs
             .SelectMany(p => Directory.Exists(p) ? Directory.EnumerateFiles(p, "*", SearchOption.AllDirectories).OrderBy(x => x, StringComparer.OrdinalIgnoreCase) : new[] { p }.AsEnumerable())
-            .Where(p => Path.GetExtension(p).ToLowerInvariant() is ".dv" or ".avi" or ".dif")
+            .Where(SourceFile.IsSupported)
             .Select(p => new SourceFile { Path = Path.GetFullPath(p) })
             .ToList();
 
@@ -92,7 +92,7 @@ static class Cli
         }
         finally
         {
-            // DV streams extracted from AVI files are only a cache
+            // DV streams extracted from AVI / MOV files are only a cache
             try { MergeEngine.ClearCache(engine.WorkDir); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
