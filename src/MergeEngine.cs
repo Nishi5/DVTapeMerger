@@ -141,6 +141,7 @@ public sealed class MergeEngine
 
         var jobDir = Path.Combine(WorkDir, "job-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture) + "-" + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(jobDir);
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
         if (UseDvrescue && !ToolRunner.IsAscii(jobDir))
             Log("警告: 作業フォルダーのパスに英数字以外が含まれています。dvrescueが失敗する場合は設定で変更してください。");
 
